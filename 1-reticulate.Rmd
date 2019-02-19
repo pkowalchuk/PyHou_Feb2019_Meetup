@@ -1,0 +1,74 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Declering variable in R
+
+```{r}
+library(reticulate)
+r<-10
+```
+
+Reading variable in Python
+
+```{python}
+print(r.r)
+```
+
+Declering variable in Python
+
+```{python}
+p=20
+```
+
+Reading variable in R
+
+```{r}
+print(py$p)
+```
+
+```{r}
+# Create the data frame.
+df <- data.frame(
+   emp_id = c (1:5), 
+   emp_name = c("Rick","Dan","Michelle","Ryan","Gary"),
+   salary = c(623.3,515.2,611.0,729.0,843.25), 
+   
+   start_date = as.Date(c("2012-01-01", "2013-09-23", "2014-11-15", "2014-05-11",
+      "2015-03-27")),
+   stringsAsFactors = FALSE
+)
+# Print the data frame.			
+print(df)
+```
+
+
+```{python}
+import numpy as np
+import pandas as pd
+
+dfp=r.df
+print(dfp)
+print(type(dfp))
+```
+
+
+```{r}
+os <- import("os")
+os$listdir(".")
+```
+
+```{r}
+builtins <- import_builtins()
+s<-'text'
+builtins$type(s)
+builtins$print(s)
+```
+
+
+

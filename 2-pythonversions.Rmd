@@ -1,0 +1,35 @@
+---
+title: "PythonVersions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(reticulate)
+#use_python('C:\\Python27-64\\python.exe',required = TRUE)
+py_config()
+```
+
+```{python}
+import platform
+print(platform.python_version())
+
+#import numpy as np
+```
+
+```{r}
+library(reticulate)
+#use_python('C:\\Python27-64\\python.exe',required = TRUE)
+py_discover_config()
+```
+
+```{python}
+import platform
+print(platform.python_version())
+
+#import numpy as np
+```
+

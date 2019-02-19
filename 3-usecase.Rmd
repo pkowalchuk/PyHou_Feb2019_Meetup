@@ -1,0 +1,584 @@
+---
+title: "Predicting Economic Outlook from Congress Composition"
+author: "Peter Kowalchuk"
+date: "11/28/2018"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+
+Every two years our nation goes thru the process of electing out government officials. It seems every year the bipartisan rhetoric gets stronger and strong. Many claims are made on what happens to the economy when either party is in control, of the President's office, the Senate or the House. Coming right out of the mid-terms, looking at what next year brings economically is certainly of interest to all.
+
+Gathering data from the Federal Reserve's FRED service ( https://fred.stlouisfed.org ) and from scrapping results from elections from the web (such as https://transition.fec.gov/pubrec/electionresults.shtm), we can build a model of what next year has in store. 
+
+We would start out by selecting economic indicators from the FRED site. Selecting interesting indicators will be done using  Wickham's  workflow. Data will be imported, made tidy, possible transformations applied and then thru visualization the most "interesting" indicators will be selected.
+
+ Electoral data will include the number of senate and house seats in congress the year after an election. Using this data together with our economic indicators, models will be built to predict a certain economic indicator. Several models can be used, presenting results from each in graphical form. We can also classify monthly economic data with a good, medium and poor economy tag. Once we do this we can train a classifier to tell us what the economic outlook might be given an input of congress seats.
+
+There seems to be the notion that Python is a better language for machine learning and running classifiers. As a stretch got for this project, to experiment with something not covered in class, we can try running python code in RStudio using the reticulate library. If this is possible, training a classifier using the popular sci-kitlearn package in Python and comparing them with results in r, could give us a clue into which is better at machine learning.
+
+#Workflow
+
+We will use Hadley Wickman's Tidy Workflow as show below.
+
+![](TidyWorkflow.png)
+
+**Loading required libraries**
+
+```{r}
+library("rvest")
+library(tidyr)
+#require(mongolite)
+library(dplyr)
+library(ggplot2)
+
+library(FredR)
+library(pipeR)
+library(kableExtra)
+
+library(reticulate)
+library(reshape2)
+```
+
+#Import Data
+
+##Economic Indicators Dataset
+
+The Federal Reserve's database has a selection of economic indicators. For this analysis we will look at GDP (Gross Domestic Product) indicators as a proxy for the health of the economy. To select an indicator we can first explore GDP indicators available.
+
+```{r}
+api.key = "4844eb6986119824760163e60bddd945"
+fred<-FredR(api.key)
+
+gdp.series <- fred$series.search("GDP")
+gdp.series %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+```
+
+From this selection we decide to use two indicators: Gross Domestic Product per Capita and Real Personal Consumption Expenditures.
+
+```{r}
+#Gross domestic product
+gdp <- fred$series.observations(series_id = 'A939RX0Q048SBEA')
+head(gdp,n=100) %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+
+#Real Personal Consumption Expenditures
+rpce <- fred$series.observations(series_id = 'DPCERL1Q225SBEA')
+head(rpce,n=100) %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+```
+
+##Electoral Dataset
+
+For this analysis we will need data showing the number of congress and senate seats occupied by both parties. This data was scrapped from The University of Wisconsin's web page. 
+
+```{r}
+url <- "https://web.education.wisc.edu/nwhillman/index.php/2017/02/01/party-control-in-congress-and-state-legislatures/"
+congress_by_party <- url %>%
+  read_html() %>%
+  html_table()
+# this is wide format . 
+congress_by_party <- congress_by_party[[1]]
+head(congress_by_party,n=100) %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+```
+
+#Tidy & Transform
+
+##Economic Indicators Dataset
+
+Since our analysis will be annual based, as senate and congress seats change biannually, the economic data gathered from the Federal Reserve site needs to be scaled up from quarterly to annually.
+
+```{r}
+#Scale up data from quarterly to annual
+gdp$date<-substring(gdp$date,1,4)
+gdp$date<-as.numeric(gdp$date)
+gdp$value<-as.numeric(gdp$value)
+gdp$value<-gdp$value/4
+gdp<-gdp %>% group_by(date) %>% summarise(value=sum(value))
+gdp <- gdp %>% mutate(Diff = (value - lag(value))/lag(value)) # we add a column for the GDP difference between each year
+
+rpce$date<-substring(rpce$date,1,4)
+rpce$date<-as.numeric(rpce$date)
+rpce$value<-as.numeric(rpce$value)
+rpce$value<-rpce$value/4
+rpce<-rpce %>% group_by(date) %>% summarise(value=sum(value))
+```
+
+###Final Economic Indicators Dataset 
+
+```{r}
+gdp %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+rpce %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+```
+
+##Electoral Dataset
+
+For our analysis, electoral data is taken into a long table format from its original wide table format in the University's website.
+
+```{r}
+# conver to long format. year, party, chamber, seats
+congress_by_party  <- congress_by_party %>% select(1:7)
+ 
+names(congress_by_party) <- c('date',
+                              paste(congress_by_party[1,2], congress_by_party[2,2]),
+                              paste(congress_by_party[1,3], congress_by_party[2,3]),
+                              paste(congress_by_party[1,4], congress_by_party[2,4]),
+                              paste(congress_by_party[1,5], congress_by_party[2,5]),
+                              paste(congress_by_party[1,6], congress_by_party[2,6]),
+                              paste(congress_by_party[1,7], congress_by_party[2,7])
+                              )
+congress_by_party <- congress_by_party %>%
+                    mutate(Senate =ifelse(congress_by_party$`Senate Dem` > congress_by_party$`Senate Rep`, "Dem", ifelse(congress_by_party$`Senate Dem` == congress_by_party$`Senate Rep`, 'Hung','Rep')))
+
+congress_by_party <- congress_by_party %>%
+                    mutate(House =ifelse(congress_by_party$`House Dem` > congress_by_party$`House Rep`, "Dem", ifelse(congress_by_party$`House Dem` == congress_by_party$`House Rep`, 'Hung','Rep')))
+
+congress_by_party<- congress_by_party[c(3:22),] %>% arrange(desc(date))
+
+congress_by_party$date <- as.numeric(congress_by_party$date)
+ 
+#Fill int the data for the year between elections
+congress_by_party_between_years <- congress_by_party
+
+congress_by_party_between_years$date <-congress_by_party_between_years$date+1
+
+congress <- rbind(congress_by_party, congress_by_party_between_years)
+
+congress<- congress %>% arrange(desc(date))
+```
+
+###Final Electoral Dataset
+
+```{r}
+ congress %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+```
+
+#Visualize
+
+**GDP Data**
+
+As can be seen below, the GDP per capita is a value that increases over time. GDP is dependent on population, but also on other factors such as inflation.
+
+```{r}
+plot(gdp$date,gdp$value)
+```
+
+For our analysis we will use the difference in GDP year over year, normalized over the previous value of GDP. This is that is calculated in the datasets Diff column
+
+```{r}
+plot(gdp$date,gdp$Diff)
+```
+
+```{r}
+gdp_congress<-gdp
+gdp_congress$date <- as.numeric(gdp_congress$date) 
+gdp_congress$Diff <- as.double(gdp_congress$Diff)
+
+ 
+gdp_congress <- gdp_congress%>%inner_join(congress)
+ 
+ggplot(gdp_congress, aes(x=date, y=Diff, shape=House, color=House)) +
+  geom_point()
+
+ggplot(gdp_congress, aes(x=date, y=Diff, shape=Senate, color=Senate)) +
+  geom_point() 
+
+```
+
+**RPCE Data*
+
+```{r}
+plot(rpce$date,rpce$value)
+```
+
+
+```{r}
+rpce_congress<-rpce
+rpce_congress$date <- as.numeric(rpce_congress$date) 
+rpce_congress$value <- as.double(rpce_congress$value)
+
+ 
+rpce_congress <- rpce_congress%>%inner_join(congress)
+ 
+ggplot(rpce_congress, aes(x=date, y=value, shape=House, color=House)) +
+  geom_point()
+
+ggplot(rpce_congress, aes(x=date, y=value, shape=Senate, color=Senate)) +
+  geom_point() 
+
+```
+
+
+#Model
+
+##Economic Indicator Predictor
+
+###GDP Models
+
+A simple model can determine the expected GDP normilized difference year on year value for a year where the Democratic or Republican party is majority in each chamber.
+
+**House controlled by the Democratic Party**
+```{r}
+gdp_congress_house_dem<-subset(gdp_congress,gdp_congress$House=="Dem")
+mean(gdp_congress_house_dem$Diff)
+```
+
+**House controlled by the Republican Party**
+```{r}
+gdp_congress_house_rep<-subset(gdp_congress,gdp_congress$House=="Rep")
+mean(gdp_congress_house_rep$Diff)
+```
+
+
+**Senate controlled by the Democratic Party**
+```{r}
+gdp_congress_senate_dem<-subset(gdp_congress,gdp_congress$Senate=="Dem")
+mean(gdp_congress_senate_dem$Diff)
+```
+
+**Senate controlled by the Republican Party**
+```{r}
+gdp_congress_senate_rep<-subset(gdp_congress,gdp_congress$Senate=="Rep")
+mean(gdp_congress_senate_rep$Diff)
+```
+
+**Senate controlled by the Republican Party and House by the Democratic Party**
+
+```{r}
+gdp_congress_senate_rep_house_dem<-subset(gdp_congress,rpce_congress$Senate=="Rep" & gdp_congress$House=="Dem")
+mean(gdp_congress_senate_rep_house_dem$Diff)
+```
+
+**GDP Diff predicted by number of Democratic Party seats in congress**
+
+To derive this model we build a linear regression of GDP Diff agaisnt the number of Democratic seats in each chamber.
+
+**House**
+
+```{r}
+congress_gdp<-inner_join(congress,gdp)
+congress_gdp$`House Dem`<-as.numeric(congress_gdp$`House Dem`)
+gdp_house_model<-lm(Diff ~ `House Dem`,data = congress_gdp)
+plot(congress_gdp$`House Dem`,congress_gdp$Diff)
+abline(gdp_house_model)
+summary(gdp_house_model)
+```
+
+**Senate**
+
+```{r}
+congress_gdp$`Senate Dem`<-as.numeric(congress_gdp$`Senate Dem`)
+gdp_senate_model<-lm(Diff ~ `Senate Dem`,data = congress_gdp)
+plot(congress_gdp$`Senate Dem`,congress_gdp$Diff)
+abline(gdp_senate_model)
+summary(gdp_senate_model)
+```
+
+###RPCE Models
+
+**RPCE prediced by majority Party**
+
+A simple model can determine the expected RPCE value for a year where the Democratic or Republican party is majority in each chamber.
+
+**House controlled by the Democratic Party**
+```{r}
+rpce_congress_house_dem<-subset(rpce_congress,rpce_congress$House=="Dem")
+mean(rpce_congress_house_dem$value)
+```
+
+**House controlled by the Republican Party**
+```{r}
+rpce_congress_house_rep<-subset(rpce_congress,rpce_congress$House=="Rep")
+mean(rpce_congress_house_rep$value)
+```
+
+
+**Senate controlled by the Democratic Party**
+```{r}
+rpce_congress_senate_dem<-subset(rpce_congress,rpce_congress$Senate=="Dem")
+mean(rpce_congress_senate_dem$value)
+```
+
+**Senate controlled by the Republican Party**
+```{r}
+rpce_congress_senate_rep<-subset(rpce_congress,rpce_congress$Senate=="Rep")
+mean(rpce_congress_senate_rep$value)
+```
+
+**Senate controlled by the Republican Party and House by the Democratic Party**
+
+```{r}
+rpce_congress_senate_rep_house_dem<-subset(rpce_congress,rpce_congress$Senate=="Rep" & rpce_congress$House=="Dem")
+mean(rpce_congress_senate_rep_house_dem$value)
+```
+
+
+**RPCE preditced by number of Democratic Party seats in congress**
+
+To derive this model we build a linear regression of RPCE agaisnt the number of Democratic seats in each chamber.
+
+**House**
+
+```{r}
+congress_rpce<-inner_join(congress,rpce)
+congress_rpce$`House Dem`<-as.numeric(congress_rpce$`House Dem`)
+rpce_house_model<-lm(value ~ `House Dem`,data = congress_rpce)
+plot(congress_rpce$`House Dem`,congress_rpce$value)
+abline(rpce_house_model)
+summary(rpce_house_model)
+```
+
+**Senate**
+
+```{r}
+congress_rpce$`Senate Dem`<-as.numeric(congress_rpce$`Senate Dem`)
+rpce_senate_model<-lm(value ~ `Senate Dem`,data = congress_rpce)
+plot(congress_rpce$`Senate Dem`,congress_rpce$value)
+abline(rpce_senate_model)
+summary(rpce_senate_model)
+```
+
+##Modeling Using Python
+
+We experiment with using Python libraries within R. To do this we use the reticulate library. The library was first installed using the command:
+
+install.packages("reticulate")
+
+The library was then loaded and the environment on top of which it runs explored. An install of Python was already available in the system, as wells as some Anaconda or conda environments.
+
+```{r}
+library(reticulate)
+py_discover_config()
+```
+
+The Python library of interest is Scikit-Learn. This library has a regression model which will be used to recreate what was done in R in the previous section to prove Python libraries can be used in RStudio. This library is installed on the environment being used by reticulate using these commands:
+
+conda_install("r-reticulate", "scikit-learn") 
+
+Other libraries were also installed:
+
+conda_install("r-reticulate", "numpy") 
+conda_install("r-reticulate", "pandas")
+
+We then load the libraries
+
+```{python}
+import numpy as np
+from sklearn import datasets, linear_model
+from sklearn.metrics import mean_squared_error, r2_score
+```
+
+As a simple experiment we will use the linear regression functionality in Scikit-Learn to build a model to try to predict the rpce from the number of Democratic seta in the House.
+
+
+First we look at how we move data from R to Python. We first move the data we will use in the regression to specific variables, and then see those variables in Python using the suffix r.
+```{r}
+#R chunk
+rpce_house_model<-lm(value ~ `House Dem`,data = congress_rpce)
+y<-congress_rpce$value
+X<-congress_rpce$'House Dem'
+```
+
+We can now see the R data in a Python chunk
+
+```{python}
+#Python chunk
+X=np.array(r.X)
+X=np.array(X)[np.newaxis]
+X=X.T
+y=np.array(r.y)
+y=np.array(y)[np.newaxis]
+y=y.T
+```
+
+We can now use this data in scikit-learn and build a linear regression model
+
+```{python}
+#Python chunk
+regr = linear_model.LinearRegression()
+regr.fit(X,y)
+y_p = regr.predict(X)
+coef=regr.coef_
+inter=regr.intercept_
+error=mean_squared_error(y, y_p)
+print('Coefficients: \n', coef)
+print('Intercept: \n', inter)
+print("Mean squared error: %.2f"% error)
+```
+
+Results from our regression are also available in R
+
+```{r}
+#R Chunk
+py$coef
+py$inter
+py$error
+
+plot(X,y)
+abline(py$inter,py$coef)
+title("Python regression plot")
+```
+
+
+##Economy Health Classifier
+
+For our Economy Health Classifier we start by procuring a monthly economy indicator from the FRED site. 
+
+```{r}
+api.key = "4844eb6986119824760163e60bddd945"
+fred<-FredR(api.key)
+
+gdp.series <- fred$series.search("GDP")
+#gdp.series
+```
+
+We select the current indicator: All Employees: Total Nonfarm Payrolls. After importing it and visualizing it we find it constantly increases with time. This is expected as the number of people employed should increase together with the active population of the nation. 
+
+```{r}
+pay <- fred$series.observations(series_id = 'PAYEMS')
+head(pay,n=100) %>% kable() %>% kable_styling() %>% scroll_box(height = "400px")
+plot(format(as.Date(pay$date,format="%Y-%m-%d"),"%Y"),pay$value)
+```
+
+To use the data for our classifier we calculate the month-on-month indicator change and we normalize against the first reading. Similar to our GDP calculation before.
+
+```{r}
+pay$value<-as.numeric(pay$value)
+pay <- pay %>% mutate(Diff = (value - lag(value))/lag(value))
+plot(format(as.Date(pay$date,format="%Y-%m-%d"),"%Y"),pay$Diff)
+```
+
+Visual inspection of the data reveals how payrolls made wide positive and negative swings during the 40's and 50's. After 1960 the data shows much clearer with possible patterns emerging. Our analysis will concentrate on data starting from 1978, which is the period for which we have congress party composition data.
+
+To build our classifier we need to establish thresholds for good, medium and poor economy. The idea is that high employment growth represents a good economy, and low employment growth is a bad economy. We look at a summary of our data to determine what would be good thresholds to use.
+
+```{r}
+pay<-na.omit(pay)
+summary(pay$Diff)
+```
+
+We classify our data as:
+  - Poor economy: payroll growth below 1st quartile
+  - Medium economy: payroll growth between 1st and 3rd quartile
+  - Good economy: payroll growth above 3rd quartile
+
+```{r}
+poor<-summary(pay$Diff)[2]
+good<-summary(pay$Diff)[5]
+pay$Health <- ifelse(pay$Diff < poor, "Bad", "Medium")
+pay$Health <- ifelse(pay$Diff > good, "Good", pay$Health)
+```
+
+Now that we have our output classification ready, our classifier will use as input features the number of congressional seats in Congress per party for both chambers. We build a table with our classification and the six input features (Democratic, Republican and Other number of seats for both the House and Senate).
+
+Do be able to join the payroll with the congressional dataset, we need to first fill in monthly rows in the congressional table.
+
+```{r}
+monthy_congress<-congress %>% slice(rep(1:n(), each = 12))
+colnames(monthy_congress)[1]<-"Year"
+pay$Year<-substring(pay$date,1,4)
+pay$Year<-as.numeric(pay$Year)
+health_congress<-inner_join(pay,monthy_congress) %>% select(6:13) %>% subset(select=-Year)
+```
+
+The resulting dataset from these transformations has the classifier's 6 input features, and the three level economy healt output. 
+
+With our data ready we can now select a scikit-learn classifier to use. We will use the MLPClassifier in Scikit-Learn, which implements a neural network classifier. We build the required input for the trassifier by transforming the data in our table. The classifier requires a X matrix with samplesxfeatures, and a y vector with samples.
+
+```{r}
+library(reticulate)
+
+X<-subset(health_congress,select = -Health)
+X<-data.matrix(X)
+
+y<-health_congress$Health
+y <- ifelse(y == "Bad", 0, y)
+y <- ifelse(y == "Medium", 1, y)
+y <- ifelse(y == "Good", 2, y)
+```
+
+```{python}
+import numpy as np
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+
+X=np.array(r.X)
+X=X.astype(np.float)
+y=list(map(int,r.y))
+
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+clf = MLPClassifier(solver='lbfgs', alpha=1e-5,hidden_layer_sizes=(415, 218), random_state=1)
+clf.fit(X_train, y_train)
+
+y_pred = clf.predict(X_test)
+cnf_matrix = confusion_matrix(y_test, y_pred)
+print(cnf_matrix)
+
+res=clf.predict([[47, 51, 2, 197, 236, 0], [45, 53, 2, 235, 199, 0]])
+```
+
+```{r}
+
+py$cnf_matrix
+
+cnf_matrix<-as.data.frame(as.table(py$cnf_matrix))
+colnames(cnf_matrix)<-c("Real","Prediction","Count")
+cnf_matrix
+
+library(reshape2)
+melted_matrix <- melt(py$cnf_matrix)
+library(ggplot2)
+ggplot(data = melted_matrix, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() + labs(x = "Real", y = "Predicted")
+```
+
+
+```{r}
+res<-py$res
+res <- ifelse(res == 0,"Bad", res)
+res <- ifelse(res == 1,"Medium", res)
+res <- ifelse(res == 2,"Good", res)
+res
+```
+
+#Communicate
+
+##Data Science
+
+Based on the analysis here presented, this is what we can expect as an economic outlook for next year.
+
+**GDP**
+
+Since the House will be lead by the Democratic party we expect GDP normilized difference to be around 0.0146259. But since the Senate will be leading the Senate, GDP normilized difference should come at 0.02084138. Since we are looking at a divided congress, expected GDP normilized difference is that for a Senate controlled by Republicans and House by Democrats, which is **0.01760847**
+
+**RPCE**
+
+Since the House will be lead by the Democratic party we expect RPCE to be around 2.62625. But since the Senate will be leading the Senate, RPCE should come at 3.49375. Since we are looking at a divided congress, expected RPCE is that for a Senate controlled by Republicans and House by Democrats, which is **3.266667**
+
+**Regression Models**
+
+An attempt was made to build a model which would predict two economic indicators from the number of seats in the House or Senate a particular party holds. This exercise proved fruitless as a statistically linear model was not possible with the data at hand.
+
+**Classifier**
+
+Using a neural network classifier we predict that the change in composition of the US Congress from 2018 to 2019 does not indicate a change in the state of the country's economy. But the classifier derived from the analysis shows lack of performance against a test set. This classifier should be revised and upgraded.
+
+##Data Engineering
+
+**Modeling in Python**
+
+Using the R Reticulate library, we are able to use Python packages in RStudio to produce models using data available in R.
+
+A Python classifier taken from the popular library Scikit-Learn can be called from within R, trained, and results sent back to R for presentation or further analysis.
+
+At least one Python library, matplotlib, presented issues when running from R using the Reticulate library.
+
